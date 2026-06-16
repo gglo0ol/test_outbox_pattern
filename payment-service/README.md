@@ -7,10 +7,13 @@ Production-ready microservice for **asynchronous payment processing** with the *
 ```mermaid
 flowchart LR
     Client -->|POST /payments| API
+    API -->|idempotency + payment cache| Redis
     API -->|TX: payment + outbox| PostgreSQL
+    Relay -->|distributed lock| Redis
     Relay -->|poll pending outbox| PostgreSQL
     Relay -->|publish| RabbitMQ
     Consumer -->|consume| RabbitMQ
+    Consumer -->|update status + cache| Redis
     Consumer -->|update status| PostgreSQL
     Consumer -->|POST webhook| Merchant
     Consumer -->|after 3 failures| DLQ
@@ -27,8 +30,8 @@ flowchart LR
 
 - Python 3.11+, FastAPI, Uvicorn
 - SQLAlchemy 2.0 (async) + asyncpg + Alembic
-- Pydantic v2, FastStream (RabbitMQ), httpx
-- PostgreSQL, RabbitMQ, Docker, uv
+- Pydantic v2, FastStream (RabbitMQ), httpx, Redis
+- PostgreSQL, RabbitMQ, Redis, Docker, uv
 
 ## Quick Start (Docker)
 
@@ -45,6 +48,7 @@ Services:
 | API       | http://localhost:8000               |
 | Swagger   | http://localhost:8000/docs          |
 | RabbitMQ  | http://localhost:15672 (guest/guest)  |
+| Redis     | localhost:6379                      |
 | PostgreSQL| localhost:5432                      |
 
 ## Local Development (without Docker)
@@ -53,14 +57,14 @@ Services:
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
-- Running PostgreSQL and RabbitMQ
+- Running PostgreSQL, RabbitMQ, and Redis
 
 ### Setup
 
 ```bash
 cd payment-service
 cp .env.example .env
-# Edit .env: set DATABASE_URL and RABBITMQ_URL for localhost
+# Edit .env: set DATABASE_URL, RABBITMQ_URL, REDIS_URL for localhost
 
 uv sync
 uv run alembic upgrade head
@@ -118,6 +122,9 @@ Repeat the same request with the same `Idempotency-Key` — you'll get the origi
 | `API_KEY`                     | Static API key for authentication    | `change-me-in-production`                    |
 | `DATABASE_URL`                | Async PostgreSQL URL                 | see `.env.example`                           |
 | `RABBITMQ_URL`                | RabbitMQ connection URL              | see `.env.example`                           |
+| `REDIS_URL`                   | Redis connection URL                 | `redis://localhost:6379/0`                   |
+| `REDIS_IDEMPOTENCY_TTL_SECONDS`| Idempotency cache TTL               | `86400` (24h)                                |
+| `REDIS_PAYMENT_CACHE_TTL_SECONDS`| Payment GET cache TTL             | `3600` (1h)                                  |
 | `OUTBOX_POLL_INTERVAL_SECONDS`| Outbox relay poll interval           | `1.0`                                        |
 | `PROCESSING_SUCCESS_RATE`     | Simulated success rate (0.0–1.0)     | `0.9`                                        |
 | `WEBHOOK_MAX_RETRIES`         | Webhook retry attempts               | `3`                                          |
@@ -167,6 +174,7 @@ uv run alembic revision --autogenerate -m "description"
 ## Design Notes
 
 - **Outbox Pattern**: guarantees at-least-once delivery to RabbitMQ even if the broker is temporarily unavailable.
+- **Redis cache**: fast idempotency lookups and payment GET responses; distributed lock for outbox relay across consumer replicas.
 - **Idempotency**: `Idempotency-Key` header prevents duplicate payments on client retries.
 - **DLQ**: failed messages after 3 processing attempts are published to `payment.process.dlq` for manual inspection.
 - **Webhook retries**: independent exponential backoff (1s, 2s, 4s) before marking processing as failed.

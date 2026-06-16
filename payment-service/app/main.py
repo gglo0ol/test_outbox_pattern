@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.api.v1.payments import router as payments_router
 from app.core.config import settings
+from app.core.redis import close_redis, init_redis
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -17,7 +18,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown hooks."""
     logger.info(f"Starting {settings.APP_NAME}")
+    await init_redis()
     yield
+    await close_redis()
     logger.info(f"Shutting down {settings.APP_NAME}")
 
 

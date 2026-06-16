@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     )
     RABBITMQ_URL: str = Field(default="amqp://guest:guest@localhost:5672/")
 
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
+    REDIS_MAX_CONNECTIONS: int = 20
+    REDIS_IDEMPOTENCY_TTL_SECONDS: int = 86_400  # 24 hours
+    REDIS_PAYMENT_CACHE_TTL_SECONDS: int = 3_600  # 1 hour
+    REDIS_OUTBOX_LOCK_TTL_SECONDS: int = 30
+
     OUTBOX_POLL_INTERVAL_SECONDS: float = 1.0
 
     PROCESSING_SUCCESS_RATE: float = 0.9

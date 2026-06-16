@@ -15,6 +15,7 @@ dependencies = [
     "faststream[rabbit]>=0.5.30",
     "httpx>=0.28.0",
     "python-multipart>=0.0.17",
+    "redis>=5.2.0",
 ]
 
 [dependency-groups]

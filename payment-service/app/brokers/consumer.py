@@ -10,8 +10,10 @@ from faststream import FastStream
 from faststream.rabbit import RabbitBroker, RabbitQueue
 from app.core.config import settings
 from app.core.database import async_session_factory
+from app.core.redis import close_redis, init_redis
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import OutboxMessagePayload, WebhookPayload
+from app.services.cache_service import CacheService
 from app.services.outbox_service import OutboxService
 from app.services.payment_service import PaymentService
 from app.utils.retry import retry_with_exponential_backoff, simulate_payment_processing
@@ -24,7 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 outbox_service = OutboxService()
-payment_service = PaymentService(outbox_service)
+cache_service = CacheService()
+payment_service = PaymentService(outbox_service, cache_service)
 
 # Main queue with dead-letter routing to DLQ
 payment_queue = RabbitQueue(
@@ -185,9 +188,15 @@ async def outbox_relay_loop() -> None:
     Poll pending outbox records and publish them to RabbitMQ.
 
     Implements the publishing side of the Transactional Outbox pattern.
+    Uses a Redis distributed lock so only one consumer instance relays at a time.
     """
     logger.info("Starting outbox relay loop")
     while True:
+        lock_acquired = await cache_service.try_acquire_outbox_lock()
+        if not lock_acquired:
+            await asyncio.sleep(settings.OUTBOX_POLL_INTERVAL_SECONDS)
+            continue
+
         try:
             async with async_session_factory() as session:
                 events = await outbox_service.fetch_pending_events(session)
@@ -210,14 +219,23 @@ async def outbox_relay_loop() -> None:
                 await session.commit()
         except Exception as exc:
             logger.exception(f"Outbox relay error: {exc}")
+        finally:
+            await cache_service.release_outbox_lock()
 
         await asyncio.sleep(settings.OUTBOX_POLL_INTERVAL_SECONDS)
 
 
 @app.on_startup
-async def start_outbox_relay() -> None:
-    """Launch background outbox relay when consumer starts."""
+async def start_consumer() -> None:
+    """Initialize Redis and launch background outbox relay."""
+    await init_redis()
     asyncio.create_task(outbox_relay_loop())
+
+
+@app.on_shutdown
+async def stop_consumer() -> None:
+    """Close Redis connection on consumer shutdown."""
+    await close_redis()
 
 
 if __name__ == "__main__":
